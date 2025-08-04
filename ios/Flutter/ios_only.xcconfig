@@ -1,0 +1,10 @@
+#include "Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"
+#include "Pods/Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"
+
+// Disable other platforms
+ENABLE_BITCODE=NO
+EXCLUDED_ARCHS[sdk=iphonesimulator*]=i386
+EXCLUDED_ARCHS[sdk=iphoneos*]=armv7
+VALID_ARCHS=arm64
+VALID_ARCHS[sdk=iphoneos*]=arm64
+VALID_ARCHS[sdk=iphonesimulator*]=x86_64
