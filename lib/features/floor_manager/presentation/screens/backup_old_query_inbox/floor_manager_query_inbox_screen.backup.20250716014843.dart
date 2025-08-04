@@ -1,0 +1,519 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
+import 'package:vip_lounge/core/constants/colors.dart';
+import 'package:vip_lounge/features/floor_manager/presentation/screens/assign_staff_to_query_screen.dart';
+
+class FloorManagerQueryInboxScreen extends StatefulWidget {
+  const FloorManagerQueryInboxScreen({Key? key}) : super(key: key);
+
+  @override
+  State<FloorManagerQueryInboxScreen> createState() => _FloorManagerQueryInboxScreenState();
+}
+
+class _FloorManagerQueryInboxScreenState extends State<FloorManagerQueryInboxScreen> {
+  DateTimeRange? _selectedRange;
+  bool _isLoading = false;
+  List<Map<String, dynamic>> _queries = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    _selectedRange = DateTimeRange(
+      start: DateTime(now.year, now.month, 1),
+      end: now,
+    );
+    _fetchQueries();
+  }
+
+  Future<void> _fetchQueries() async {
+    setState(() => _isLoading = true);
+    try {
+      Query query = FirebaseFirestore.instance
+          .collection('queries')
+          .orderBy('createdAt', descending: true);
+          
+      if (_selectedRange != null) {
+        final start = Timestamp.fromDate(_selectedRange!.start);
+        final end = Timestamp.fromDate(_selectedRange!.end.add(const Duration(days: 1)));
+        query = query
+            .where('createdAt', isGreaterThanOrEqualTo: start)
+            .where('createdAt', isLessThan: end);
+      }
+      
+      final snapshot = await query.get();
+      
+      setState(() {
+        _queries = snapshot.docs.map((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          return {...data, 'id': doc.id};
+        }).toList();
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Error loading queries')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Map<String, List<Map<String, dynamic>>> _groupByStaff(List<Map<String, dynamic>> queries) {
+    final Map<String, List<Map<String, dynamic>>> grouped = {};
+    
+    // First add unassigned queries
+    final unassigned = queries.where((q) => 
+      q['assignedToName'] == null || 
+      q['assignedToName'].toString().isEmpty ||
+      q['status']?.toString().toLowerCase() == 'unassigned' ||
+      q['status']?.toString().toLowerCase() == 'new'
+    ).toList();
+    
+    if (unassigned.isNotEmpty) {
+      grouped['Unassigned'] = unassigned;
+    }
+    
+    // Then group assigned queries by staff
+    final assignedQueries = queries.where((q) => 
+      q['assignedToName'] != null && 
+      q['assignedToName'].toString().isNotEmpty &&
+      q['status']?.toString().toLowerCase() != 'unassigned' &&
+      q['status']?.toString().toLowerCase() != 'new'
+    );
+    
+    for (var q in assignedQueries) {
+      final staff = q['assignedToName'];
+      grouped.putIfAbsent(staff, () => []).add(q);
+    }
+    
+    return grouped;
+  }
+
+  List<Map<String, dynamic>> _getTopStaff(List<Map<String, dynamic>> queries) {
+    final Map<String, int> staffCount = {};
+    for (var q in queries) {
+      final staff = q['assignedToName'] ?? 'Unassigned';
+      if (staff == 'Unassigned') continue;
+      staffCount[staff] = (staffCount[staff] ?? 0) + 1;
+    }
+    final sorted = staffCount.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return sorted.map((e) => {'name': e.key, 'count': e.value}).toList();
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'new':
+      case 'unassigned':
+        return Colors.orange;
+      case 'in progress':
+      case 'assigned':
+        return Colors.blue;
+      case 'resolved':
+      case 'completed':
+        return Colors.green;
+      case 'rejected':
+      case 'cancelled':
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  bool _isQueryOverdue(Map<String, dynamic> query) {
+    if (query['assignedAt'] == null) return false;
+    
+    final assignedAt = query['assignedAt'] is Timestamp 
+        ? (query['assignedAt'] as Timestamp).toDate()
+        : DateTime.now();
+    final now = DateTime.now();
+    final difference = now.difference(assignedAt).inMinutes;
+    
+    // If status is not resolved and it's been more than 30 minutes since assignment
+    return query['status']?.toString().toLowerCase() != 'resolved' && 
+           query['status']?.toString().toLowerCase() != 'completed' &&
+           difference > 30;
+  }
+
+  Widget _buildQueryItem(Map<String, dynamic> query) {
+    final ministerName = query['ministerName'] ?? '${query['ministerFirstName'] ?? ''} ${query['ministerLastName'] ?? ''}'.trim();
+    final ministerEmail = query['ministerEmail'] ?? '';
+    final ministerPhone = query['ministerPhone'] ?? query['ministerPhoneNumber'] ?? '';
+    final queryText = query['query'] ?? query['uery'] ?? 'No query text';
+    final status = query['status']?.toString().toLowerCase() ?? 'new';
+    final isAssigned = status != 'new' && status != 'unassigned' && query['assignedToId'] != null;
+    final assignedToName = query['assignedToName'] ?? '';
+    final referenceNumber = query['referenceNumber'] ?? 'N/A';
+    final createdAt = query['createdAt'] is Timestamp 
+        ? (query['createdAt'] as Timestamp).toDate() 
+        : DateTime.now();
+    final assignedAt = query['assignedAt'] is Timestamp
+        ? (query['assignedAt'] as Timestamp).toDate()
+        : null;
+    final formattedDate = DateFormat('MMM d, y hh:mm a').format(createdAt);
+    final formattedAssignedDate = assignedAt != null 
+        ? DateFormat('MMM d, y hh:mm a').format(assignedAt)
+        : 'Not assigned';
+    final statusHistory = (query['statusHistory'] ?? []).cast<Map<String, dynamic>>();
+    final isOverdue = _isQueryOverdue(query);
+    
+    // Sort status history by timestamp
+    statusHistory.sort((a, b) {
+      final aTime = a['timestamp'] is Timestamp ? (a['timestamp'] as Timestamp).toDate() : DateTime.now();
+      final bTime = b['timestamp'] is Timestamp ? (b['timestamp'] as Timestamp).toDate() : DateTime.now();
+      return bTime.compareTo(aTime); // Newest first
+    });
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      elevation: 2,
+      child: InkWell(
+        onTap: () {
+          if (!isAssigned) {
+            // Navigate to assign staff screen for unassigned queries
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => AssignStaffToQueryScreen(
+                  query: Map<String, dynamic>.from(query)..['id'] = query['id'] ?? (query['documentID'] ?? query['id']),
+                ),
+              ),
+            ).then((assigned) {
+              if (assigned == true) {
+                // Refresh the query list if a staff member was assigned
+                _fetchQueries();
+              }
+            });
+          } else {
+            // Show query details for assigned queries
+            _showQueryDetails(context, query);
+          }
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              // Header row with reference, status and warning
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      if (isOverdue) ...[
+                        const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 18),
+                        const SizedBox(width: 4),
+                      ],
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.blue.shade200),
+                        ),
+                        child: Text(
+                          '#$referenceNumber',
+                          style: TextStyle(
+                            color: isOverdue ? Colors.orange.shade800 : Colors.blue.shade800,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _getStatusColor(status).withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: _getStatusColor(status).withOpacity(0.5)),
+                    ),
+                    child: Text(
+                      status.toUpperCase(),
+                      style: TextStyle(
+                        color: _getStatusColor(status),
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              
+              const SizedBox(height: 12),
+              
+              // Minister details
+              if (ministerName.isNotEmpty) ...[
+                Text(
+                  'Minister: $ministerName',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                if (ministerPhone.isNotEmpty) Text(
+                  'Phone: $ministerPhone',
+                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+                if (ministerEmail.isNotEmpty) Text(
+                  'Email: $ministerEmail',
+                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+                const SizedBox(height: 8),
+              ],
+              
+              // Query text
+              Text(
+                queryText,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 14),
+              ),
+              
+              const SizedBox(height: 12),
+              
+              // Status history preview (show latest status change if any)
+              if (statusHistory.isNotEmpty) ...[
+                const Text(
+                  'Latest Update:',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.grey,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                SizedBox(
+                  width: double.infinity,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        margin: const EdgeInsets.only(top: 4, right: 8),
+                        decoration: BoxDecoration(
+                          color: _getStatusColor(status),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      Flexible(
+                        child: Text(
+                          '${statusHistory.first['status']?.toString().toUpperCase() ?? 'N/A'} • ${statusHistory.first['changedBy'] ?? 'System'}',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        DateFormat('MMM d, hh:mm a').format(createdAt),
+                        style: const TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              
+              // Assigned to section with timing
+              if (isAssigned && assignedToName.isNotEmpty) ...[
+                const Divider(height: 24, thickness: 1),
+                SizedBox(
+                  width: double.infinity,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.person_outline, size: 16, color: Colors.grey),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Assigned to: $assignedToName',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: isOverdue ? Colors.orange.shade800 : Colors.grey,
+                                fontWeight: isOverdue ? FontWeight.bold : FontWeight.normal,
+                              ),
+                            ),
+                            if (query['assignedToEmail'] != null)
+                              Text(
+                                query['assignedToEmail']!,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: isOverdue ? Colors.orange.shade800 : Colors.red,
+                                  fontWeight: isOverdue ? FontWeight.bold : FontWeight.w500,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Assigned: $formattedAssignedDate',
+                      style: TextStyle(
+                      const SizedBox(height: 4),
+                      Text(
+                        '⚠️ Overdue - More than 30 minutes without resolution',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.orange.shade800,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showQueryDetails(BuildContext context, Map<String, dynamic> query) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Query #${query['referenceNumber'] ?? 'N/A'}'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'From: ${query['ministerName'] ?? 'N/A'}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text('Query: ${query['query'] ?? query['uery'] ?? 'No details'}'),
+              const SizedBox(height: 8),
+              if (query['assignedToName'] != null) ...[
+                Text('Assigned to: ${query['assignedToName']}'),
+                const SizedBox(height: 8),
+              ],
+              if (query['status'] != null) ...[
+                Text('Status: ${query['status']}'),
+                const SizedBox(height: 8),
+              ],
+              Text(
+                'Created: ${query['createdAt'] != null ? DateFormat('yyyy-MM-dd HH:mm').format((query['createdAt'] as Timestamp).toDate()) : 'N/A'}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final grouped = _groupByStaff(_queries);
+    final topStaff = _getTopStaff(_queries);
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Query Report'),
+        backgroundColor: AppColors.black,
+        foregroundColor: AppColors.primary,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.date_range, color: AppColors.primary),
+            onPressed: () async {
+              final picked = await showDateRangePicker(
+                context: context,
+                firstDate: DateTime(2023, 1),
+                lastDate: DateTime.now(),
+                initialDateRange: _selectedRange,
+              );
+              if (picked != null) {
+                setState(() => _selectedRange = picked);
+                _fetchQueries();
+              }
+            },
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                if (topStaff.isNotEmpty)
+                  Card(
+                    color: AppColors.primary.withOpacity(0.15),
+                    margin: const EdgeInsets.only(bottom: 16),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Top Performing Staff', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                          const SizedBox(height: 8),
+                    ),
+    );
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(staff, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.orange)),
+                                const SizedBox(width: 10),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary,
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  child: Text('${queries.length}', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 14)),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            ...queries.map((q) => _buildQueryItem(q as Map<String, dynamic>)).toList(),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ],
+            ),
+      );
+  }
+}

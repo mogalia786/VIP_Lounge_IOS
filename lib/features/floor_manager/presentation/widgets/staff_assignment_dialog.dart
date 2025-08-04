@@ -1,0 +1,805 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import '../../../../core/constants/colors.dart';
+import '../../../../core/services/fcm_service.dart';
+
+class StaffAssignmentDialog extends StatefulWidget {
+  final String appointmentId;
+  final String staffType;
+  final String? currentStaffId;
+  final String? currentStaffName;
+  final Function(String staffId, String staffName) onStaffAssigned;
+
+  const StaffAssignmentDialog({
+    Key? key,
+    required this.appointmentId,
+    required this.staffType,
+    this.currentStaffId,
+    this.currentStaffName,
+    required this.onStaffAssigned,
+  }) : super(key: key);
+
+  @override
+  _StaffAssignmentDialogState createState() => _StaffAssignmentDialogState();
+}
+
+class _StaffAssignmentDialogState extends State<StaffAssignmentDialog> {
+  final Map<String, bool> _sickStaffCache = {};
+  bool _isLoading = true;
+  String? _selectedStaffId;
+  String? _selectedStaffName;
+  List<DocumentSnapshot> _staffList = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedStaffId = widget.currentStaffId;
+    _selectedStaffName = widget.currentStaffName;
+    _fetchStaffList();
+  }
+
+  Future<void> _fetchStaffList() async {
+    try {
+      // Fetch all staff of the specified type
+      final staffSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .where('role', isEqualTo: widget.staffType)
+          .get();
+
+      // Fetch sick leaves for today
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final todayEnd = todayStart.add(const Duration(days: 1));
+
+      final sickLeaves = await FirebaseFirestore.instance
+          .collection('sick_leaves')
+          .where('status', isEqualTo: 'pending')
+          .where('startDate', isLessThanOrEqualTo: Timestamp.fromDate(todayEnd))
+          .where('endDate', isGreaterThanOrEqualTo: Timestamp.fromDate(todayStart))
+          .get();
+
+      // Build sick staff cache
+      for (var doc in sickLeaves.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        final userId = data['userId'] as String?;
+        if (userId != null) {
+          _sickStaffCache[userId] = true;
+        }
+      }
+
+      setState(() {
+        _staffList = staffSnapshot.docs;
+        _isLoading = false;
+      });
+    } catch (e) {
+      print('Error fetching staff list: $e');
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Assign ${widget.staffType.capitalize()}'),
+      content: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : SizedBox(
+              width: double.maxFinite,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _staffList.length,
+                itemBuilder: (context, index) {
+                  final staff = _staffList[index].data() as Map<String, dynamic>;
+                  final staffId = _staffList[index].id;
+                  final staffName = '${staff['firstName'] ?? ''} ${staff['lastName'] ?? ''}'.trim();
+                  final isSick = _sickStaffCache.containsKey(staffId);
+                  final isSelected = _selectedStaffId == staffId;
+
+                  return ListTile(
+                    leading: isSick
+                        ? const Icon(Icons.sick, color: Colors.red)
+                        : null,
+                    title: Text(
+                      staffName.isNotEmpty ? staffName : 'Unnamed Staff',
+                      style: TextStyle(
+                        color: isSick ? Colors.grey : null,
+                        fontWeight: isSelected ? FontWeight.bold : null,
+                        decoration: isSick ? TextDecoration.lineThrough : null,
+                      ),
+                    ),
+                    subtitle: isSick ? const Text('On sick leave', style: TextStyle(color: Colors.red)) : null,
+                    trailing: isSelected ? const Icon(Icons.check, color: Colors.green) : null,
+                    onTap: isSick
+                        ? null
+                        : () {
+                            setState(() {
+                              _selectedStaffId = staffId;
+                              _selectedStaffName = staffName;
+                            });
+                          },
+                  );
+                },
+              ),
+            ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _selectedStaffId != null && _selectedStaffId != widget.currentStaffId
+              ? () {
+                  widget.onStaffAssigned(_selectedStaffId!, _selectedStaffName!);
+                  Navigator.of(context).pop();
+                }
+              : null,
+          child: const Text('Assign'),
+        ),
+      ],
+    );
+  }
+}
+
+extension StringExtension on String {
+  String capitalize() {
+    return '${this[0].toUpperCase()}${substring(1)}';
+  }
+}
+
+
+// Model for option data
+class OptionData {
+  final String id;
+  final String text;
+  final int score;
+  final int order;
+
+  OptionData({
+    required this.id,
+    required this.text,
+    required this.score,
+    required this.order,
+  });
+}
+
+// Model for question responses
+class QuestionResponse {
+  final String questionId;
+  final String questionText;
+  final List<OptionData> availableOptions;
+  final String selectedOptionId;
+  final String selectedOptionText;
+  final int selectedScore;
+
+  QuestionResponse({
+    required this.questionId,
+    required this.questionText,
+    required this.availableOptions,
+    required this.selectedOptionId,
+    required this.selectedOptionText,
+    required this.selectedScore,
+  });
+}
+
+// Model to hold feedback data
+class FeedbackData {
+  final String id;
+  final String ministerId;
+  final String ministerName;
+  final String appointmentId;
+  final String? referenceNumber;
+  final String? serviceId;
+  final String? typeOfVip;
+  final DateTime date;
+  final List<QuestionResponse> questions;
+  final String? comment;
+  final String? consultantName;
+  final String? conciergeName;
+  final double? rating;
+
+  FeedbackData({
+    required this.id,
+    required this.ministerId,
+    required this.ministerName,
+    required this.appointmentId,
+    this.referenceNumber,
+    this.serviceId,
+    this.typeOfVip,
+    required this.date,
+    required this.questions,
+    this.comment,
+    this.consultantName,
+    this.conciergeName,
+    this.rating,
+  });
+}
+
+class FeedbackReceivedScreen extends StatefulWidget {
+  const FeedbackReceivedScreen({Key? key}) : super(key: key);
+
+  @override
+  _FeedbackReceivedScreenState createState() => _FeedbackReceivedScreenState();
+}
+
+class _FeedbackReceivedScreenState extends State<FeedbackReceivedScreen> {
+  bool _isLoading = false;
+  DateTime _selectedMonth = DateTime.now();
+  List<FeedbackData> _allFeedback = [];
+  
+  // Color scheme for ministers
+  final List<Color> _ministerColors = [
+    Colors.blue,
+    Colors.green,
+    Colors.red,
+    Colors.purple,
+    Colors.orange,
+    Colors.teal,
+    Colors.indigo,
+    Colors.pink,
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchFeedback();
+  }
+
+  Color _getMinisterColor(int index) {
+    return _ministerColors[index % _ministerColors.length];
+  }
+
+  Future<void> _fetchFeedback() async {
+    setState(() => _isLoading = true);
+    
+    try {
+      debugPrint('🔍 Fetching feedback for ${DateFormat('MMMM yyyy').format(_selectedMonth)}');
+      
+      // Calculate date range for the selected month
+      final startOfMonth = DateTime(_selectedMonth.year, _selectedMonth.month, 1);
+      final endOfMonth = DateTime(_selectedMonth.year, _selectedMonth.month + 1, 0, 23, 59, 59);
+      
+      // Query Client_feedback collection
+      final feedbackQuery = await FirebaseFirestore.instance
+          .collection('Client_feedback')
+          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
+          .where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
+          .orderBy('createdAt', descending: true)
+          .get();
+
+      debugPrint('📊 Found ${feedbackQuery.docs.length} feedback documents');
+
+      List<FeedbackData> feedbackList = [];
+
+      for (final doc in feedbackQuery.docs) {
+        final data = doc.data();
+        debugPrint('📋 Processing feedback: ${doc.id}');
+        
+        // Get appointment details
+        final appointmentId = data['appointmentId'];
+        if (appointmentId == null) continue;
+        
+        // Fetch appointment details
+        final appointmentDoc = await FirebaseFirestore.instance
+            .collection('appointments')
+            .doc(appointmentId)
+            .get();
+            
+        if (!appointmentDoc.exists) continue;
+        
+        final appointmentData = appointmentDoc.data()!;
+        final serviceId = appointmentData['serviceId'] ?? appointmentData['service_id'] ?? 'Unknown';
+        final consultantName = appointmentData['consultantName'] ?? 'Not assigned';
+        final conciergeName = appointmentData['conciergeName'] ?? 'Not assigned';
+        final typeOfVip = appointmentData['typeOfVip'] ?? 'Unknown';
+        final referenceNumber = appointmentData['referenceNumber'] ?? 'Unknown';
+        
+        // Get minister details using EXACT field names you specified
+        final ministerId = data['ministerId'] ?? appointmentData['ministerId'] ?? '';
+        final ministerFirstName = appointmentData['ministerFirstname'] ?? '';  // lowercase 'n'
+        final ministerLastName = appointmentData['ministerLastName'] ?? '';   // uppercase 'N'
+        final ministerPhone = appointmentData['ministerPhoneNumber'] ?? '';
+        final ministerEmail = appointmentData['ministerEmail'] ?? '';
+        final ministerName = '$ministerFirstName $ministerLastName'.trim();
+        
+        debugPrint('👤 Minister: "$ministerName" (First: "$ministerFirstName", Last: "$ministerLastName")');
+        
+        // Process questions and responses
+        List<QuestionResponse> questionResponses = [];
+        
+        // Handle both Map and List formats for responses
+        dynamic responsesData = data['responses'];
+        List<dynamic> responses = [];
+        
+        if (responsesData is List<dynamic>) {
+          responses = responsesData;
+        } else if (responsesData is Map<String, dynamic>) {
+          // Convert Map to List of values
+          responses = responsesData.values.toList();
+        }
+        
+        debugPrint('📝 Processing ${responses.length} responses for feedback ${doc.id}');
+        
+        for (final response in responses) {
+          if (response is Map<String, dynamic>) {
+            final questionId = response['questionId']?.toString();
+            final selectedOptionId = response['selectedOptionId']?.toString();
+            
+            if (questionId != null && selectedOptionId != null) {
+              // Fetch question details
+              final questionDoc = await FirebaseFirestore.instance
+                  .collection('Feedback_questions')
+                  .doc(questionId)
+                  .get();
+              
+              if (!questionDoc.exists) continue;
+              
+              final questionData = questionDoc.data()!;
+              final questionText = questionData['questionText'] ?? questionData['text'] ?? 'Question';
+              
+              // Fetch all options for this question
+              final optionsQuery = await FirebaseFirestore.instance
+                  .collection('Feedback_options')
+                  .where('questionId', isEqualTo: questionId)
+                  .orderBy('order')
+                  .get();
+              
+              List<OptionData> options = [];
+              String selectedOptionText = 'Unknown';
+              int selectedScore = 0;
+              
+              for (final optionDoc in optionsQuery.docs) {
+                final optionData = optionDoc.data();
+                final option = OptionData(
+                  id: optionDoc.id,
+                  text: optionData['optionText'] ?? optionData['text'] ?? 'Option',
+                  score: optionData['score'] ?? optionData['value'] ?? 0,
+                  order: optionData['order'] ?? 0,
+                );
+                options.add(option);
+                
+                // Check if this is the selected option
+                if (optionDoc.id == selectedOptionId) {
+                  selectedOptionText = option.text;
+                  selectedScore = option.score;
+                }
+              }
+              
+              questionResponses.add(QuestionResponse(
+                questionId: questionId,
+                questionText: questionText,
+                availableOptions: options,
+                selectedOptionId: selectedOptionId,
+                selectedOptionText: selectedOptionText,
+                selectedScore: selectedScore,
+              ));
+            }
+          }
+        }
+        
+        // Create feedback data
+        final feedback = FeedbackData(
+          id: doc.id,
+          ministerId: ministerId,
+          ministerName: ministerName.isEmpty ? 'Unknown Minister' : ministerName,
+          appointmentId: appointmentId,
+          referenceNumber: referenceNumber,
+          serviceId: serviceId,
+          typeOfVip: typeOfVip,
+          date: (data['createdAt'] as Timestamp).toDate(),
+          questions: questionResponses,
+          comment: data['comment'],
+          consultantName: consultantName,
+          conciergeName: conciergeName,
+          rating: data['averageScore']?.toDouble(),
+        );
+        
+        feedbackList.add(feedback);
+        debugPrint('✅ Added feedback for ${feedback.ministerName} with ${feedback.questions.length} questions');
+      }
+
+      setState(() {
+        _allFeedback = feedbackList;
+        _isLoading = false;
+      });
+      
+      debugPrint('🎉 Loaded ${_allFeedback.length} complete feedback records');
+      
+    } catch (e) {
+      debugPrint('❌ Error fetching feedback: $e');
+      setState(() => _isLoading = false);
+    }
+  }
+
+  double _calculateMonthlyAverage() {
+    if (_allFeedback.isEmpty) return 0.0;
+    
+    double totalScore = 0.0;
+    double totalPossible = 0.0;
+    
+    for (final feedback in _allFeedback) {
+      for (final question in feedback.questions) {
+        totalScore += question.selectedScore.toDouble();
+        // Find max possible score for this question
+        final maxScore = question.availableOptions.isNotEmpty 
+            ? question.availableOptions.map((o) => o.score).reduce((a, b) => a > b ? a : b)
+            : 5;
+        totalPossible += maxScore.toDouble();
+      }
+    }
+    
+    if (totalPossible == 0) return 0.0;
+    
+    final ratio = totalScore / totalPossible;
+    final average = ratio * 5.0; // Convert to /5 scale
+    
+    debugPrint('📊 Monthly Average: $totalScore/$totalPossible = ${average.toStringAsFixed(2)}/5.0');
+    return average;
+  }
+
+  Future<void> _selectMonth() async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedMonth,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+      initialDatePickerMode: DatePickerMode.year,
+    );
+    
+    if (picked != null && picked != _selectedMonth) {
+      setState(() {
+        _selectedMonth = picked;
+      });
+      _fetchFeedback();
+    }
+  }
+
+  Widget _buildFeedbackCard(FeedbackData feedback, int ministerIndex) {
+    final ministerColor = _getMinisterColor(ministerIndex);
+    
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      elevation: 6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: ExpansionTile(
+        leading: CircleAvatar(
+          backgroundColor: ministerColor,
+          child: Text(
+            feedback.ministerName.isNotEmpty ? feedback.ministerName[0] : 'M',
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+        ),
+        title: Text(
+          feedback.ministerName,
+          style: TextStyle(
+            color: ministerColor,
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              DateFormat('MMM dd, yyyy').format(feedback.date),
+              style: const TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+            const SizedBox(height: 4),
+            // Reference Number - Highlighted
+            if (feedback.referenceNumber != null && feedback.referenceNumber != 'Unknown')
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.amber, width: 1),
+                ),
+                child: Text(
+                  'Ref: ${feedback.referenceNumber}',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+            const SizedBox(height: 4),
+            // VIP Type - Highlighted
+            if (feedback.typeOfVip != null && feedback.typeOfVip != 'Unknown')
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.purple.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.purple, width: 1),
+                ),
+                child: Text(
+                  'VIP: ${feedback.typeOfVip}',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Service ID
+                if (feedback.serviceId != null && feedback.serviceId != 'Unknown') ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: ministerColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.business_center, color: ministerColor, size: 16),
+                        const SizedBox(width: 8),
+                        const Text('Service ID: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                        Text(feedback.serviceId!, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                
+                // Staff Information
+                if (feedback.consultantName != null || feedback.conciergeName != null) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Staff:', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 4),
+                        if (feedback.consultantName != null && feedback.consultantName != 'Not assigned')
+                          Text('Consultant: ${feedback.consultantName}'),
+                        if (feedback.conciergeName != null && feedback.conciergeName != 'Not assigned')
+                          Text('Concierge: ${feedback.conciergeName}'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                
+                // Questions and Responses with Scores
+                if (feedback.questions.isNotEmpty) ...[
+                  const Text(
+                    'Feedback Questions & Scores:',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  ...feedback.questions.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final question = entry.value;
+                    final maxScore = question.availableOptions.isNotEmpty 
+                        ? question.availableOptions.map((o) => o.score).reduce((a, b) => a > b ? a : b)
+                        : 5;
+                    
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: ministerColor.withOpacity(0.3)),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Question Header with Score
+                          Row(
+                            children: [
+                              CircleAvatar(
+                                radius: 12,
+                                backgroundColor: ministerColor,
+                                child: Text(
+                                  '${index + 1}',
+                                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  question.questionText,
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                ),
+                              ),
+                              // Score Badge
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: ministerColor,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  '${question.selectedScore}/$maxScore',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          
+                          // Selected Answer
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: ministerColor.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.check_circle, color: ministerColor, size: 16),
+                                const SizedBox(width: 6),
+                                const Text('Answer: ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                Expanded(
+                                  child: Text(
+                                    question.selectedOptionText,
+                                    style: TextStyle(color: ministerColor, fontWeight: FontWeight.w600, fontSize: 12),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ] else ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      'No questions found for this feedback',
+                      style: TextStyle(fontStyle: FontStyle.italic),
+                    ),
+                  ),
+                ],
+                
+                // Comments
+                if (feedback.comment?.isNotEmpty ?? false) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Comments:', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 4),
+                        Text(feedback.comment!),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMonthlyAverageCard() {
+    final average = _calculateMonthlyAverage();
+    
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Colors.blue.shade600, Colors.blue.shade800],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.blue.withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          const Text(
+            'Monthly Average Score',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            DateFormat('MMMM yyyy').format(_selectedMonth),
+            style: const TextStyle(color: Colors.white70, fontSize: 14),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            average > 0 ? '${average.toStringAsFixed(2)}/5.0' : 'No data',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          if (average > 0) ...[
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(5, (index) {
+                return Icon(
+                  index < average.floor()
+                      ? Icons.star
+                      : index < average.ceil()
+                          ? Icons.star_half
+                          : Icons.star_border,
+                  color: Colors.amber,
+                  size: 24,
+                );
+              }),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Feedback Received'),
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.calendar_today),
+            onPressed: _selectMonth,
+            tooltip: 'Select Month',
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                _buildMonthlyAverageCard(),
+                Expanded(
+                  child: _allFeedback.isEmpty
+                      ? const Center(
+                          child: Text(
+                            'No feedback found for this month',
+                            style: TextStyle(fontSize: 16, color: Colors.grey),
+                          ),
+                        )
+                      : ListView.builder(
+                          itemCount: _allFeedback.length,
+                          itemBuilder: (context, index) {
+                            return _buildFeedbackCard(_allFeedback[index], index);
+                          },
+                        ),
+                ),
+              ],
+            ),
+    );
+  }
+}
