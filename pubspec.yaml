@@ -40,13 +40,13 @@ dependencies:
   firebase_core: ^2.32.0
   firebase_auth: ^4.20.0
   cloud_firestore: ^4.17.5
-  firebase_messaging: ^14.9.4
+  firebase_messaging: ^14.7.10  # Downgraded to be compatible with firebase_core 2.x
   firebase_storage: ^11.5.6
   shared_preferences: ^2.2.2
   package_info_plus: ^4.0.0
   http: ^1.1.0
   path_provider: ^2.1.2
-  open_file: ^3.5.6
+  open_file: ^3.2.1  # Using a version compatible with Firebase 2.x
   syncfusion_flutter_core: ^30.1.42
   provider: ^6.1.2
   intl_phone_number_input: ^0.7.4
@@ -83,7 +83,7 @@ dependencies:
 
 dependency_overrides:
   # Ensure open_file doesn't cause issues with macOS
-  open_file: ^3.5.6
+  open_file: ^3.2.1  # Using a version compatible with Firebase 2.x
 
 dev_dependencies:
   flutter_test:
