@@ -1,0 +1,19 @@
+#include "Generated.xcconfig"
+
+// Set the iOS deployment target
+IPHONEOS_DEPLOYMENT_TARGET = 15.0
+
+// Enable modular headers for better Swift/Obj-C interoperability
+CLANG_ENABLE_MODULES = YES
+
+// Enable ARC for all targets
+CLANG_ENABLE_OBJC_ARC = YES
+
+// Disable bitcode
+ENABLE_BITCODE = NO
+
+// Set the Swift version
+SWIFT_VERSION = 5.0
+
+// Set the build active architecture only for debug
+ONLY_ACTIVE_ARCH = $(EFFECTIVE_PLATFORM:iphoneos=) $(EFFECTIVE_PLATFORM:macosx=) $(EFFECTIVE_PLATFORM:appletvos=) $(EFFECTIVE_PLATFORM:watchos=)
