@@ -1,5 +1,8 @@
-# Uncomment this line to define a global platform for your project
-# platform :ios, '12.0'
+# Define iOS platform version
+platform :ios, '15.0'
+
+# Disable the Flutter build system for CocoaPods
+install! 'cocoapods', :deterministic_uuids => false
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
