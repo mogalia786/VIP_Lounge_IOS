@@ -2,7 +2,9 @@
 platform :ios, '15.0'
 
 # Disable the Flutter build system for CocoaPods
-install! 'cocoapods', :deterministic_uuids => false
+install! 'cocoapods',
+  :deterministic_uuids => false,
+  :integrate_targets => false
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -41,6 +43,21 @@ end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+      
+      # Fix for unsupported -G flag
+      config.build_settings['GCC_GENERATE_DEBUGGING_SYMBOLS'] = 'NO'
+      
+      # Enable modular headers for better Swift/Obj-C interoperability
+      config.build_settings['DEFINES_MODULE'] = 'YES'
+      
+      # Enable ARC for all targets
+      config.build_settings['CLANG_ENABLE_OBJC_ARC'] = 'YES'
+      
+      # Fix for Xcode 15+ compatibility
+      config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
+    end
     flutter_additional_ios_build_settings(target)
   end
 end
