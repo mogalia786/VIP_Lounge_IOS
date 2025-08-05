@@ -1,23 +1,5 @@
-# Performance optimizations
-install! 'cocoapods', 
-  :deterministic_uuids => false, 
-  :integrate_targets => false,
-  :disable_input_output_paths => true
-
-# Platform and versions
-platform :ios, '15.0'
-
-# Disable all other platforms
-def self.verify_platforms_are_supported!(*)
-  # Override to prevent platform verification errors
-end
-
-# Pinned versions
-$GRPC_VERSION = '1.62.5'
-$FirebaseSDKVersion = '10.25.0'
-
-# Using the same Toast version as fluttertoast requires
-pod 'Toast', '4.1.1'
+# Uncomment this line to define a global platform for your project
+# platform :ios, '12.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -45,161 +27,17 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelpe
 
 flutter_ios_podfile_setup
 
-# Removed pre_install hook as it was causing issues
-# We'll handle the BoringSSL-GRPC fixes in the post_install hook instead
-
 target 'Runner' do
-  use_frameworks! :linkage => :static
-  use_modular_headers!
+  use_frameworks!
 
-  # Add PhoneNumberKit with specific version that works with libphonenumber_plugin
-  pod 'PhoneNumberKit', '~> 3.3.3'
-
-  # Install only iOS pods
-  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__)) do |pod_name, pod_target|
-    # Skip problematic pods for non-iOS platforms
-    if pod_name.include?('_android') || 
-       pod_name.include?('_windows') || 
-       pod_name.include?('_linux') || 
-       pod_name.include?('_macos')
-      pod_target.native_target.build_configurations.each do |config|
-        config.build_settings['ENABLE_BITCODE'] = 'NO'
-        config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = '$(EXCLUDED_ARCHS__EFFECTIVE_PLATFORM_SUFFIX_$(EFFECTIVE_PLATFORM_SUFFIX)__NATIVE_ARCH_64_BIT_$(NATIVE_ARCH_64_BIT)__XCODE_$(XCODE_VERSION_MAJOR))'
-      end
-      next false
-    end
-    
-    # Configure file_picker specifically
-    if pod_name == 'file_picker'
-      pod_target.native_target.build_configurations.each do |config|
-        config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
-        config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] << 'FILE_PICKER_DISABLE_UNSUPPORTED_PLATFORMS=1'
-      end
-    end
-    
-    true
-  end
-  
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do
     inherit! :search_paths
   end
 end
 
-# Helper to recursively clean build settings
-def clean_build_settings(settings)
-  return unless settings.is_a?(Hash)
-  
-  settings.each do |key, value|
-    if value.is_a?(String)
-      # Clean up build settings
-      settings[key] = value.gsub(/-G\b/, '')
-                         .gsub(/-fno-objc-arc-unsupported/, '')
-                         .gsub(/\s+/, ' ')
-                         .strip
-    elsif value.is_a?(Array)
-      # Clean up array settings
-      settings[key] = value.reject do |flag| 
-        flag.to_s.include?('-G') || 
-        flag.to_s.include?('-fno-objc-arc-unsupported')
-      end
-    end
-  end
-end
-
-
-
-# Exclude workmanager from pod installation
-pre_install do |installer|
-  installer.pod_targets.each do |pod|
-    if pod.name == 'workmanager'
-      pod.instance_variable_set(:@should_build, false)
-    end
-  end
-end
-
-# Consolidated post_install hook with all necessary configurations
-# Helper to exclude unsupported platforms from build
-class Pod::Spec
-  def exclude_unsupported_platforms!(platforms_to_exclude)
-    platforms_to_exclude.each do |platform|
-      @available_platforms.reject! { |p| p.name == platform }
-    end
-  end
-end
-
-# Exclude workmanager from pod installation
-pre_install do |installer|
-  installer.pod_targets.each do |pod|
-    if pod.name == 'workmanager' || pod.name.start_with?('file_picker')
-      pod.instance_variable_set(:@should_build, false)
-    end
-  end
-end
-
-# Post install hook to configure build settings
 post_install do |installer|
   installer.pods_project.targets.each do |target|
-    # Skip file_picker targets as we're excluding them
-    next if target.name.start_with?('file_picker_')
-    
-    # Apply Flutter's default settings
     flutter_additional_ios_build_settings(target)
-    
-    target.build_configurations.each do |config|
-      # Set Swift version and deployment target
-      config.build_settings['SWIFT_VERSION'] = '5.0'
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-      
-      # Architecture and build settings
-      config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
-      config.build_settings['ENABLE_BITCODE'] = 'NO'
-      config.build_settings['CLANG_ENABLE_MODULES'] = 'YES'
-      
-      # Handle bundle targets
-      if target.respond_to?(:product_type) && target.product_type == "com.apple.product-type.bundle"
-        config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-      end
-      
-      # Optimization settings
-      if config.name == 'Debug'
-        config.build_settings['SWIFT_OPTIMIZATION_LEVEL'] = '-Onone'
-        config.build_settings['GCC_OPTIMIZATION_LEVEL'] = '0'
-      else
-        config.build_settings['SWIFT_OPTIMIZATION_LEVEL'] = '-O'
-        config.build_settings['GCC_OPTIMIZATION_LEVEL'] = 's'
-      end
-    end
-  end
-  
-  # Apply Flutter's post install settings
-  installer.pods_project.targets.each do |target|
-    target.build_configurations.each do |config|
-      # Exclude unsupported platforms for file_picker
-      if target.name.start_with?('file_picker_')
-        config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
-        config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] << 'FILE_PICKER_DISABLE_UNSUPPORTED_PLATFORMS=1'
-      end
-    end
-  end
-  
-  # Apply Flutter's post install settings to all targets
-  installer.pods_project.targets.each do |target|
-    flutter_additional_ios_build_settings(target)
-    
-    # Fix for BoringSSL-GRPC
-    if target.name == 'BoringSSL-GRPC'
-      target.source_build_phase.files.each do |file|
-        if file.settings && file.settings['COMPILER_FLAGS']
-          flags = file.settings['COMPILER_FLAGS'].split
-          flags.reject! { |flag| flag == '-GCC_WARN_INHIBIT_ALL_WARNINGS' || flag == '-G' }
-          file.settings['COMPILER_FLAGS'] = flags.join(' ')
-        end
-      end
-    end
-  end
-  
-  # Speed up build by not building for other architectures
-  installer.pods_project.build_configurations.each do |config|
-    config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
   end
 end
