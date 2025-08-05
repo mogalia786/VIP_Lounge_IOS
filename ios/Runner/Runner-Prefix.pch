@@ -1,0 +1,10 @@
+#ifdef __OBJC__
+    #import <UIKit/UIKit.h>
+    #import <Flutter/Flutter.h>
+    #import <UserNotifications/UserNotifications.h>
+    #import <Firebase/Firebase.h>
+#endif
+
+#ifndef __IPHONE_15_0
+#warning "This project uses features only available in iOS 15.0 and newer."
+#endif
